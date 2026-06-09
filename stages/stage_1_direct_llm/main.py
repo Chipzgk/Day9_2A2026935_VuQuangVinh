@@ -19,8 +19,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from common.llm import get_llm
 
-QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
-
+# QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
+QUESTION = "Hợp đồng lao động miệng có giá trị pháp lý không?"
 
 async def main():
     print("=" * 70)
@@ -48,6 +48,7 @@ async def main():
     ]
 
     print("\n>>> Calling LLM directly (no tools, no RAG)...\n")
+    print(f"\n>>> Mẫu tin nhắn gửi đi là: {messages} \n")
     response = await llm.ainvoke(messages)
     print(response.content)
 

@@ -51,69 +51,103 @@ class LawState(TypedDict):
 # Node implementations
 # ---------------------------------------------------------------------------
 
-async def analyze_law(state: LawState) -> dict:
-    """LLM analysis from a contract / general law perspective."""
-    llm = get_llm()
-    messages = [
-        SystemMessage(
-            content=(
-                "You are a senior corporate litigation attorney specialising in contract law, "
-                "tort law, and general business law. Analyse the legal aspects of the question "
-                "thoroughly, covering relevant statutes, case law principles, and liability exposure."
-            )
-        ),
-        HumanMessage(content=state["question"]),
-    ]
-    result = await llm.ainvoke(messages)
-    return {"law_analysis": result.content}
+# async def analyze_law(state: LawState) -> dict:
+#     """LLM analysis from a contract / general law perspective."""
+#     llm = get_llm()
+#     messages = [
+#         SystemMessage(
+#             content=(
+#                 "You are a senior corporate litigation attorney specialising in contract law, "
+#                 "tort law, and general business law. Analyse the legal aspects of the question "
+#                 "thoroughly, covering relevant statutes, case law principles, and liability exposure."
+#             )
+#         ),
+#         HumanMessage(content=state["question"]),
+#     ]
+#     result = await llm.ainvoke(messages)
+#     return {"law_analysis": result.content}
 
 
-async def check_routing(state: LawState) -> dict:
-    """Determine whether tax and/or compliance sub-agents are needed.
+# async def check_routing(state: LawState) -> dict:
+#     """Determine whether tax and/or compliance sub-agents are needed.
 
-    Returns updated state flags so the routing function can read them.
-    If delegation depth is already at the max, skip further delegation.
-    """
+#     Returns updated state flags so the routing function can read them.
+#     If delegation depth is already at the max, skip further delegation.
+#     """
+#     depth = state.get("delegation_depth", 0)
+#     if depth >= MAX_DELEGATION_DEPTH:
+#         logger.info("Max delegation depth reached (%d); skipping sub-agents", depth)
+#         return {"needs_tax": False, "needs_compliance": False}
+
+#     llm = get_llm()
+#     messages = [
+#         SystemMessage(
+#             content=(
+#                 'You are a legal routing expert. Based on the question, decide whether '
+#                 'specialist sub-agents are needed.\n'
+#                 'Reply with ONLY valid JSON — no markdown, no extra text:\n'
+#                 '{"needs_tax": <true|false>, "needs_compliance": <true|false>}\n\n'
+#                 'needs_tax = true  → question involves tax law, IRS, tax evasion, penalties\n'
+#                 'needs_compliance = true → question involves regulatory compliance, SEC, SOX, AML, FCPA'
+#             )
+#         ),
+#         HumanMessage(content=state["question"]),
+#     ]
+#     result = await llm.ainvoke(messages)
+#     raw = result.content.strip()
+
+#     # Strip markdown code fences if present
+#     if raw.startswith("```"):
+#         raw = raw.split("```")[1]
+#         if raw.startswith("json"):
+#             raw = raw[4:]
+#         raw = raw.strip()
+
+#     try:
+#         parsed = json.loads(raw)
+#     except json.JSONDecodeError:
+#         logger.warning("Routing LLM returned non-JSON: %r — defaulting to both=True", raw)
+#         parsed = {"needs_tax": True, "needs_compliance": True}
+
+#     needs_tax = bool(parsed.get("needs_tax", True))
+#     needs_compliance = bool(parsed.get("needs_compliance", True))
+#     logger.info("Routing decision: needs_tax=%s needs_compliance=%s", needs_tax, needs_compliance)
+#     return {"needs_tax": needs_tax, "needs_compliance": needs_compliance}
+
+async def analyze_and_route(state: LawState) -> dict:
+    """Gộp analyze_law + check_routing thành 1 LLM call."""
     depth = state.get("delegation_depth", 0)
     if depth >= MAX_DELEGATION_DEPTH:
-        logger.info("Max delegation depth reached (%d); skipping sub-agents", depth)
-        return {"needs_tax": False, "needs_compliance": False}
+        return {"law_analysis": "", "needs_tax": False, "needs_compliance": False}
 
     llm = get_llm()
     messages = [
-        SystemMessage(
-            content=(
-                'You are a legal routing expert. Based on the question, decide whether '
-                'specialist sub-agents are needed.\n'
-                'Reply with ONLY valid JSON — no markdown, no extra text:\n'
-                '{"needs_tax": <true|false>, "needs_compliance": <true|false>}\n\n'
-                'needs_tax = true  → question involves tax law, IRS, tax evasion, penalties\n'
-                'needs_compliance = true → question involves regulatory compliance, SEC, SOX, AML, FCPA'
-            )
-        ),
+        SystemMessage(content=(
+            "You are a senior corporate litigation attorney. Do two things:\n"
+            "1. Analyse the legal aspects of the question (2-3 sentences)\n"
+            "2. Decide if specialist agents are needed\n\n"
+            "Reply ONLY in valid JSON:\n"
+            '{"law_analysis": "<your analysis>", "needs_tax": <true|false>, "needs_compliance": <true|false>}'
+        )),
         HumanMessage(content=state["question"]),
     ]
     result = await llm.ainvoke(messages)
     raw = result.content.strip()
-
-    # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Routing LLM returned non-JSON: %r — defaulting to both=True", raw)
-        parsed = {"needs_tax": True, "needs_compliance": True}
+        parsed = {"law_analysis": raw, "needs_tax": True, "needs_compliance": True}
 
-    needs_tax = bool(parsed.get("needs_tax", True))
-    needs_compliance = bool(parsed.get("needs_compliance", True))
-    logger.info("Routing decision: needs_tax=%s needs_compliance=%s", needs_tax, needs_compliance)
-    return {"needs_tax": needs_tax, "needs_compliance": needs_compliance}
-
+    return {
+        "law_analysis": parsed.get("law_analysis", ""),
+        "needs_tax": bool(parsed.get("needs_tax", True)),
+        "needs_compliance": bool(parsed.get("needs_compliance", True)),
+    }
 
 def route_to_subagents(state: LawState) -> list[Send]:
     """Routing function: dispatch parallel Send objects based on routing flags.
@@ -212,19 +246,27 @@ def create_graph():
     """Build and compile the Law Agent StateGraph."""
     graph = StateGraph(LawState)
 
-    graph.add_node("analyze_law", analyze_law)
-    graph.add_node("check_routing", check_routing)
+    # graph.add_node("analyze_law", analyze_law)
+    # graph.add_node("check_routing", check_routing)
+    graph.add_node("analyze_and_route", analyze_and_route)
     graph.add_node("call_tax", call_tax)
     graph.add_node("call_compliance", call_compliance)
     graph.add_node("aggregate", aggregate)
 
-    graph.set_entry_point("analyze_law")
-    graph.add_edge("analyze_law", "check_routing")
+    # graph.set_entry_point("analyze_law")
+    # graph.add_edge("analyze_law", "check_routing")
 
     # Conditional parallel dispatch: after check_routing, route_to_subagents
     # returns a list of Send objects (to call_tax, call_compliance, or aggregate)
+    # graph.add_conditional_edges(
+    #     "check_routing",
+    #     route_to_subagents,
+    #     ["call_tax", "call_compliance", "aggregate"],
+    # )
+
+    graph.set_entry_point("analyze_and_route")
     graph.add_conditional_edges(
-        "check_routing",
+        "analyze_and_route",
         route_to_subagents,
         ["call_tax", "call_compliance", "aggregate"],
     )

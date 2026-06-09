@@ -31,7 +31,7 @@ When answering, be precise about:
    for executives who directed the evasion
 
 Always note that your response is for educational purposes and the user
-should consult a licensed attorney for specific legal advice.
+should consult a licensed attorney for specific legal advice. Keep your response concise, under 100 words.
 """
 
 

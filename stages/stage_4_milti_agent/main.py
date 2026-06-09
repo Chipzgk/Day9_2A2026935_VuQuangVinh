@@ -116,6 +116,7 @@ class LegalState(TypedDict):
     needs_compliance: bool
     tax_result: Annotated[str, _last_wins]
     compliance_result: Annotated[str, _last_wins]
+    privacy_analysis: Annotated[str, _last_wins]
     final_answer: str
 
 
@@ -180,14 +181,16 @@ async def check_routing(state: LegalState) -> dict:
 
 def route_to_specialists(state: LegalState) -> list[Send]:
     """Routing function: dispatch parallel Send objects to specialist nodes."""
+    question_lower = state["question"].lower()
     sends: list[Send] = []
     if state.get("needs_tax"):
         sends.append(Send("call_tax_specialist", state))
     if state.get("needs_compliance"):
         sends.append(Send("call_compliance_specialist", state))
-    if not sends:
-        sends.append(Send("aggregate", state))
-    return sends
+    if any(kw in question_lower for kw in ["data", "privacy", "gdpr", "dữ liệu"]):
+        sends.append(Send("privacy_agent", state))
+
+    return sends if sends else [Send("aggregate",state)]
 
 
 async def call_tax_specialist(state: LegalState) -> dict:
@@ -235,6 +238,22 @@ async def call_compliance_specialist(state: LegalState) -> dict:
     return {"compliance_result": final_msg}
 
 
+async def privacy_agent(state: LegalState) -> dict:
+    """Agent chuyên về GDPR và luật bảo vệ dữ liệu cá nhân."""
+    print("\n  [Node: privacy_agent] Privacy specialist starting...")
+    llm = get_llm()
+    prompt = f"""Bạn là chuyên gia về GDPR và luật bảo vệ dữ liệu cá nhân.
+
+Câu hỏi gốc: {state['question']}
+Phân tích pháp lý: {state.get('law_analysis', 'N/A')}
+
+Hãy phân tích các vấn đề về privacy và GDPR (nếu có).
+"""
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    print(f"  [Node: privacy_agent] Done ({len(response.content)} chars)")
+    return {"privacy_analysis": response.content}
+
+
 async def aggregate(state: LegalState) -> dict:
     """Combine all specialist analyses into a final comprehensive answer."""
     print("\n  [Node: aggregate] Combining all specialist analyses...")
@@ -278,6 +297,10 @@ def create_graph():
     graph.add_node("check_routing", check_routing)
     graph.add_node("call_tax_specialist", call_tax_specialist)
     graph.add_node("call_compliance_specialist", call_compliance_specialist)
+
+    graph.add_node("privacy_agent", privacy_agent)
+    graph.add_edge("privacy_agent", "aggregate")
+
     graph.add_node("aggregate", aggregate)
 
     graph.set_entry_point("analyze_law")
@@ -285,7 +308,7 @@ def create_graph():
     graph.add_conditional_edges(
         "check_routing",
         route_to_specialists,
-        ["call_tax_specialist", "call_compliance_specialist", "aggregate"],
+        ["call_tax_specialist", "call_compliance_specialist", "privacy_agent", "aggregate"],
     )
     graph.add_edge("call_tax_specialist", "aggregate")
     graph.add_edge("call_compliance_specialist", "aggregate")
@@ -355,6 +378,13 @@ async def main():
     print("Stage 5 (this repo's main project) takes this same graph topology")
     print("and deploys each agent as an independent A2A service. Run it with:")
     print("  ./start_all.sh && python test_client.py")
+
+    graph_obj = create_graph()
+    png_data = graph_obj.get_graph().draw_mermaid_png()
+    with open("graph.png", "wb") as f:
+        f.write(png_data)
+    print("Graph saved to graph.png")
+
     print("=" * 70)
 
 
